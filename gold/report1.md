@@ -4,8 +4,6 @@ WISE, Xiamen University
 Sunday, August 17, 2014 
 
 
-Table of Contents
-
 [TOC]
 
 **********************
