@@ -1,0 +1,225 @@
+---
+title: "Gold Paper Report 1"
+author: "Xiaojun Sun"
+date: "Sunday, August 17, 2014"
+output:
+  html_document:
+    highlight: pygments
+    keep_md: yes
+    number_sections: yes
+    theme: united
+---
+
+<h4 class="address"><em>WISE, Xiamen University</em></h4>
+
+
+```{r start,echo=FALSE}
+setwd("E:/Gold Paper/Gold-Codes")
+options(digits = 3)
+knitr::opts_chunk$set(cache=TRUE,fig.align="center")
+```
+**********************
+# Introduction
+
+As disscussed in the paper, 21 independent variables are taken into consideration. They are Australian Dollar(aud), Canadian Dollar(cd), Mexico Peso(mxn), British Pound(gbp), Hong Kong dollar(hkd), Japanese Yen(jpy), South Korean dollar(krd), New Zealand dollar(nzd), South Africa rand(rand), Chilean Peso(clp), Singapore dollar(sgd),Taiwan dollar (twd), Commodity price index(cpx), US CPI(cpi), House price index(hpx), Federal fund interest rate(fedi), Oil price(oil), Japanese NIKKEI stock index(jpsi), Australian Stock index(asx), Average American Stock Index(aasi) and Average European Stock Index(aesi). All variables are availiable after Jan 1991 except Mexico Peso availiable from Nov 1993. The end of the sample period is Dec 2011 because I haven't updated my dataset. I will do that later.
+
+In this report I will present the whole analysis in the paper. And some questions are raised in the end.
+
+# Investigate The Gold Price
+
+The gold price data is provided by World Gold Council([WGC][]). It's availiable from 1978/12/29. In this paper what I use is the monthly average gold price time series data. 
+
+```{r goldall}
+gold <- read.csv("data/gold_all.csv")
+gold.ts <- ts(gold, start=c(1978,12), freq=12)
+plot(gold.ts, ylab="Gold Price($)", main="The gold price since Dec 1987")
+dgold <- diff(gold.ts,1)
+plot(dgold, ylab="Differenced Gold Price($)", main="The differenced gold price since Dec 1987")
+```
+
+Since my sample starts from Jan 1994, I draw the plots for this period.
+
+```{r subgold}
+subgold <- window(gold.ts, start=c(1994,1))
+plot(subgold, ylab="Gold Price($)",main="The gold price since Jan 1994")
+subgold.annual <- aggregate(subgold)/12
+plot(subgold.annual, ylab="Gold Price($)",main="The annual gold price since 1994")
+```
+
+You can see that the gold price kept increasing for more than 10 years and it begins to decrease recently. We are curious about why the gold price increased so much in the last decade.
+
+```{r doldacf}
+library(astsa)
+x <- acf2(subgold, 50) ## The ACF and PACF of monthly gold price with max lag=50
+```
+
+The above graph is the ACF and PACF of monthly gold price with max lag=50. So the gold price is a AR(1) process.
+
+# Unit Root Tests
+## The detailed procedures
+First, load the data. Note that my sample period is from **Jan 1994** to **Dec 2011**.
+
+```{r data}
+library(RODBC)
+conn <- odbcConnectExcel2007("data/alldata(8.17).xlsx",readOnly = TRUE)
+oridata <- sqlFetch(conn,"ALL")
+odbcClose(conn)
+str(oridata) ## see the structure of the original dataset
+predata <- do.call(cbind,lapply(oridata[,-1], function(col.data){
+    ts.data <- ts(col.data, start=c(1991,1), freq=12)
+    return(ts.data)
+}))
+```
+
+Second, specify the input profile. I make the input profile independent so that it can be modified easily.
+
+```{r ur_input}
+profile.default <- list(
+    name = "Unit Root Tests",
+    urtests = c("adf.test","pp.test","kpss.test"),
+    w.start = c(1991,1),
+    w.end = c(2011,12)
+)
+profile.user <- list(
+    w.start = c(1994,6) ## the sample period starts from June 1994.
+    )
+profile <- modifyList(profile.default, profile.user)
+```
+
+Then the unit root tests logic.
+```{r ur_logic,warning=FALSE}
+library(plyr)
+library(tseries)
+urts <- function(data,profile) {
+    d.ts <- window(data, start=profile$w.start, end=profile$w.end)
+    res <- do.call(rbind,lapply(profile$urtests, function(fun){
+        urtest <- get(fun)
+        urtest(diff(d.ts,1))$p.value
+    }
+                                ))
+    return(res)
+}
+
+urres <- do.call(cbind, lapply(predata, urts, profile))
+```
+
+## The unit root tests output
+Now I make a table in which every entry is the p-value resulting from applying the unit root tests(ADF test, PP test and KPSS test) to each time series.
+
+```{r ur_output,results='asis'}
+colnames(urres) <- colnames(oridata[,-1])
+rownames(urres) <- profile$urtests
+knitr::kable(urres[,1:11],format = "markdown", align="c")
+knitr::kable(urres[,12:22],format = "markdown", align="c")
+```
+
+Noting that all tests are carried out on the differenced time series, we can conclude from the tables above that all variable are stationary after first differencing. So I will use the differenced data in the model estimation.
+
+# Model Estimation
+## Regression including all variables
+```{r estimation}
+estdata <- do.call(cbind,lapply(predata, function(pre){
+    presub <- window(pre, start=profile$w.start, end=profile$w.end)
+    diff(presub, 1)
+}))
+est <- as.data.frame(estdata) ## convert "mts" to "data.frame"
+goldfit <- lm(gold~., data=est)
+summary(goldfit)
+## the diagnostic plots
+par(mfrow=c(2,2))
+plot(goldfit, main="The diagnostic plots")
+par(mfrow=c(1,1))
+plot(goldfit$residuals, type="l", main="Plot of the residual series")
+abline(h = 0, col="red")
+```
+
+## A simple model selected
+
+Then I use the backward stepwise regression to select a "simple" model.
+
+```{r stepwise_reg}
+library(MASS)
+ms <- stepAIC(goldfit, direction="backward", trace=F)
+ms$anova
+## then we eatimate the final model
+gold.s <- lm(gold ~ cpx + clp + aud + nzd + mxn + sgd + aesi + asi, data=est)
+summary(gold.s)
+par(mfrow=c(2,2))
+plot(gold.s)
+```
+So 8 independent variables are selected out and form a simple model `gold ~ cpx + clp + aud + nzd + mxn + sgd + aesi + asi`.
+It performs better than the original model.
+
+# Cointegration breakdown test
+Now use the cointegration breakdown test which is proposed by [Andrew and Kim (2006)][Andrew2006] to test the break points of gold price.
+The model selected out in the last section is used.
+
+```{r breakdown_test}
+library(foreach)
+library(doParallel)
+library(parallel)
+
+m <- 6  # the length of the breakdown period
+tt <- 50:(nrow(estdata)-m) # T in the paper
+cl <- makeCluster(detectCores())
+clusterExport(cl,c("m","tt","est")) # est comes from section 4.1
+registerDoParallel(cl)
+
+pvs <- foreach(t=tt) %dopar% {
+    j <- 1:(t-m+1)
+    pjs <- do.call(cbind,lapply(j, function(j){
+        leave <- j:(j+ceiling(m/2)-1)
+        subset <- (1:t)[-leave]
+        subest <- est[subset,]
+        select <- est[j:(j+m-1),]
+        lm <- lm(gold~cpx + clp + aud + nzd + mxn + sgd + aesi + asi, data=subest) 
+        ## the model selected out in the last section
+        res <- select$gold - predict(lm, newdata = select)
+        pj <- t(res)%*%res
+        return(pj)
+    }))
+    estimate <- est[1:(t+m),]
+    goldlm <- lm(gold~cpx + clp + aud + nzd + mxn + sgd + aesi + asi, data = estimate)
+    m.cal <- (t+1):(t+m)
+    calc <- est[m.cal , ]
+    end <- calc$gold - predict(goldlm, newdata = calc)## great!!
+    p <- t(end)%*%end
+
+    EDF <- ecdf(pjs)
+    pvalue <- 1-EDF(p)
+    pvalue
+}
+stopCluster(cl)
+```
+I make a graph of the P values resulting from the test. 
+The breakdowns occur at where the line graph is below the red p-value=0.05 line. 
+
+```{r breakdown_output}
+pvs <- as.numeric(pvs)
+start <- profile$w.start
+start[1] <- start[1] + floor(tt[1]/12)
+start[2] <- start[2] + tt[1] - floor(tt[1]/12)*12
+pv.ts = ts(pvs, start= start, freq=12) ## good!
+plot(pv.ts, type="l", ylab="P value", main="P-values of the cointegration breakdown test")
+abline(h=0.05, col="red")
+```
+I find that there are cointegration breakdowns in 1999, 2006, 2008 and 2011.
+
+# Questions
+I have some questions that listed as below.
+
+- How to select the best model ? I mean there are 21 explanatory variables (too many !). How could we remove the redundant variables ? And how should we choose the appropriate lags for each variable ?
+- Cindy mentioned the partial cointegration. How should we model it? Are there any references ?
+- We can see that the cointegration breakdown test can detect the breakdown of the gold price time series. But I think we cannot use it for prediction. So what can we use the results of cointegration breakdown test for ?
+
+
+The End.
+
+**********************
+The session information is appended here.
+```{r info}
+sessionInfo()
+```
+
+[WGC]:www.gold.org
+[Andrew2006]:http://www.jstor.org/discover/10.2307/27638890?uid=3739560&uid=2&uid=4&uid=3739256&sid=21104597962083
